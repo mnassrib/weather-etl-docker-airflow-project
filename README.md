@@ -9,7 +9,7 @@
     - [Docker Compose](#docker-compose)
     - [Script d'initialisation MySQL](#script-dinitialisation-mysql)
 5. [Configuration du DAG Airflow](#configuration-du-dag-airflow)
-6. [Vérification et Déploiement](#vérification-et-déploiement)
+6. [Vérification et déploiement](#vérification-et-déploiement)
 7. [Conclusion](#conclusion)
 
 ## Introduction au projet
