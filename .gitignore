@@ -1,0 +1,8 @@
+# Ignore environment variables file
+.env
+
+# Ignore log files
+airflow/logs/
+
+# Optional: Ignore all __pycache__ directories throughout the project
+__pycache__/
