@@ -4,5 +4,5 @@
 # Ignore log files
 airflow/logs/
 
-# Optional: Ignore all __pycache__ directories throughout the project
-__pycache__/
+# Ignore Python cache files
+airflow/dags/__pycache__/
