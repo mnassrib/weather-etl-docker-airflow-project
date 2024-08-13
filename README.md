@@ -1,5 +1,5 @@
 
-# Configuration d'un Pipeline ETL avec Apache Airflow et MySQL via Docker
+# Configuration d'un Weather Pipeline ETL avec Apache Airflow et MySQL via Docker
 
 ## Table des matières
 1. [Introduction au projet](#introduction-au-projet)
@@ -55,33 +55,35 @@ weather-etl-docker-airflow-project/
 Créez un fichier `.env` à la racine du projet avec le contenu suivant :
 
 ```env
-# MySQL environment variables
-MYSQL_ROOT_PASSWORD=rootpassword
+# MySQL environment variables for Airflow
+MYSQL_ROOT_PASSWORD=root
 MYSQL_DATABASE=airflow_db
 MYSQL_HOST=mysql
 MYSQL_USER=airflow
 MYSQL_PASSWORD=123
 
-# Weather Database environment variables
+# MySQL environment variables for Weather
 WEATHER_MYSQL_DATABASE=meteo
-WEATHER_USER=airflow
-WEATHER_PASSWORD=123
 
 # Weather API environment variables
 WEATHER_API_KEY=your_api_key
 WEATHER_CITY=Marseille
 WEATHER_LANG=fr
 WEATHER_UNITS=metric
+
+# Airflow SQLAlchemy connection string
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=mysql://root:${MYSQL_ROOT_PASSWORD}@${MYSQL_HOST}:3306/${MYSQL_DATABASE}
 ```
 
 ### Explication des variables d'environnement :
 
 - **`MYSQL_ROOT_PASSWORD`** : Le mot de passe root pour le serveur MySQL. Utilisé pour créer les bases de données et les utilisateurs.
 - **`MYSQL_DATABASE`** : Le nom de la base de données utilisée par Airflow pour stocker ses métadonnées.
-- **`MYSQL_USER`** et **`MYSQL_PASSWORD`** : Les informations de connexion pour l'utilisateur MySQL utilisé par Airflow.
+- **`MYSQL_HOST`** : Le nom du service MySQL défini dans `docker-compose.yml`. Cela signifie que tout service (comme Airflow) qui a besoin de se connecter à MySQL se connectera à l'hôte (serveur) nommé `mysql`.
+- **`MYSQL_USER`** et **`MYSQL_PASSWORD`** : Les informations de connexion pour l'utilisateur MySQL utilisé par Airflow pour la base de données météorologique.
 - **`WEATHER_MYSQL_DATABASE`** : Le nom de la base de données qui stocke les données météorologiques.
-- **`WEATHER_USER`** et **`WEATHER_PASSWORD`** : Les informations de connexion pour l'utilisateur MySQL qui accède à la base de données météorologique.
 - **`WEATHER_API_KEY`**, **`WEATHER_CITY`**, **`WEATHER_LANG`**, **`WEATHER_UNITS`** : Paramètres pour accéder à l'API OpenWeatherMap, notamment la clé API, la ville ciblée, la langue des données, et les unités (métriques, impériales).
+- **`AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`** : La chaîne de connexion SQLAlchemy pour qu'Airflow se connecte à la base de données MySQL.
 
 ## Création des fichiers de configuration
 
@@ -92,47 +94,16 @@ Voici le contenu du fichier `docker-compose.yml` :
 ```yaml
 services:
   mysql:
-    image: mysql:5.7
+    image: mysql:latest
     container_name: mysql
-    command: --default-authentication-plugin=mysql_native_password --explicit_defaults_for_timestamp=1
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
-      - mysql-data:/var/lib/mysql
-      - ./mysql/my.cnf:/etc/mysql/my.cnf 
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 10s
-      retries: 5
+      - mysql_data:/var/lib/mysql
+      - ./mysql/my.cnf:/etc/mysql/my.cnf  # Monte le fichier my.cnf
     networks:
       - airflow_network
-
-  mysql-setup:
-      image: mysql:5.7
-      container_name: mysql-setup
-      command: >
-        bash -c "
-        mysql -h mysql -u root -p${MYSQL_ROOT_PASSWORD} -e \"
-          CREATE DATABASE IF NOT EXISTS ${WEATHER_MYSQL_DATABASE};
-          CREATE USER IF NOT EXISTS '${MYSQL_USER}'@'%' IDENTIFIED BY '${MYSQL_PASSWORD}';
-          GRANT ALL PRIVILEGES ON ${WEATHER_MYSQL_DATABASE}.* TO '${MYSQL_USER}'@'%';
-          FLUSH PRIVILEGES;\"
-        "
-      environment:
-        MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-        WEATHER_MYSQL_DATABASE: ${WEATHER_MYSQL_DATABASE}
-        MYSQL_USER: ${MYSQL_USER}
-        MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      networks:
-        - airflow_network
-      depends_on:
-        mysql:
-          condition: service_healthy
-      restart: "no"
 
   adminer:
     image: adminer
@@ -146,39 +117,12 @@ services:
     networks:
       - airflow_network
 
-  airflow-init:
-    image: apache/airflow:2.3.0
-    container_name: airflow-init
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
-    entrypoint: /bin/bash
-    command: -c "airflow db upgrade && airflow users create --username admin --password admin --firstname Air --lastname Flow --role Admin --email admin@example.com"
-    depends_on:
-      mysql:
-        condition: service_healthy
-    networks:
-      - airflow_network
-    restart: "no"
-
   airflow:
     build: ./airflow
     image: airflow
     container_name: airflow
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'False'
-      MYSQL_HOST: ${MYSQL_HOST}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      WEATHER_MYSQL_DATABASE: ${WEATHER_MYSQL_DATABASE}
-      WEATHER_API_KEY: ${WEATHER_API_KEY}
-      WEATHER_CITY: ${WEATHER_CITY}
-      WEATHER_LANG: ${WEATHER_LANG}
-      WEATHER_UNITS: ${WEATHER_UNITS}
+    env_file:
+      - .env  # Charge toutes les variables d'environnement depuis le fichier .env
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
@@ -186,17 +130,18 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      mysql:
-        condition: service_healthy
-      airflow-init:
-        condition: service_completed_successfully
+      - mysql
     command: >
-      bash -c "airflow scheduler & airflow webserver"
+      bash -c " 
+        airflow db init || airflow db upgrade;
+        airflow users create --username admin --password admin --firstname Air --lastname Flow --role Admin --email admin@example.com;
+        airflow scheduler & airflow webserver
+      "
     networks:
       - airflow_network
 
 volumes:
-  mysql-data:
+  mysql_data:
 
 networks:
   airflow_network:
@@ -211,21 +156,11 @@ Le fichier `docker-compose.yml` décrit la configuration d'un ensemble de servic
 1. **MySQL** (`mysql`):
    - **Image** : Utilise l'image officielle MySQL 5.7.
    - **Container Name** : Le conteneur est nommé `mysql`.
-   - **Command** : Spécifie des options pour MySQL, notamment l'utilisation de l'authentification native (`mysql_native_password`) et la gestion explicite des `timestamp`.
-   - **Environment** : Les variables d'environnement pour configurer MySQL. Elles incluent le mot de passe root, le nom de la base de données par défaut, l'utilisateur MySQL, et le mot de passe utilisateur.
-   - **Volumes** : Monte le répertoire de données MySQL (`mysql-data`) pour persister les données, et monte le fichier de configuration MySQL (`my.cnf`).
-   - **Healthcheck** : Vérifie la disponibilité de MySQL en exécutant `mysqladmin ping` toutes les 10 secondes, avec un délai de 10 secondes et 5 tentatives avant de considérer le conteneur comme `unhealthy`.
+   - **Environment** : Les variables d'environnement pour configurer MySQL. Elles incluent le mot de passe root, et l'utilisateur MySQL.
+   - **Volumes** : Monte le répertoire de données MySQL (`mysql_data`) pour persister les données, et monte le fichier de configuration MySQL (`my.cnf`).
    - **Networks** : Connecte le conteneur au réseau `airflow_network`.
 
-2. **MySQL Setup** (`mysql-setup`):
-   - **Image** : Utilise également l'image MySQL 5.7.
-   - **Container Name** : Le conteneur est nommé `mysql-setup`.
-   - **Command** : Exécute un script bash pour créer une nouvelle base de données (`WEATHER_MYSQL_DATABASE`), un utilisateur (`MYSQL_USER`), et accorde les privilèges nécessaires. Le conteneur attend que MySQL soit prêt (`service_healthy`) avant de s'exécuter.
-   - **Environment** : Les variables d'environnement pour se connecter à MySQL et configurer la base de données et les utilisateurs.
-   - **Depends_on** : Assure que `mysql-setup` ne démarre que lorsque MySQL est prêt (`service_healthy`).
-   - **Restart** : Le conteneur ne redémarre pas automatiquement (`restart: "no"`).
-
-3. **Adminer** (`adminer`):
+2. **Adminer** (`adminer`):
    - **Image** : Utilise l'image officielle `adminer`, un outil d'administration de bases de données accessible via une interface web.
    - **Container Name** : Le conteneur est nommé `adminer`.
    - **Ports** : Mappe le port `8080` du conteneur sur le port `8081` de l'hôte, permettant d'accéder à Adminer via `http://localhost:8081`.
@@ -233,26 +168,18 @@ Le fichier `docker-compose.yml` décrit la configuration d'un ensemble de servic
    - **Environment** : Spécifie le serveur MySQL par défaut pour Adminer (`mysql`).
    - **Networks** : Connecte le conteneur au réseau `airflow_network`.
 
-4. **Airflow Init** (`airflow-init`):
-   - **Image** : Utilise l'image Apache Airflow 2.3.0.
-   - **Container Name** : Le conteneur est nommé `airflow-init`.
-   - **Environment** : Configure Airflow, notamment l'exécuteur utilisé (`LocalExecutor`) et la connexion à la base de données MySQL.
-   - **Command** : Initialise la base de données Airflow avec `airflow db upgrade` et crée un utilisateur administrateur.
-   - **Depends_on** : Assure que `airflow-init` ne démarre que lorsque MySQL est prêt (`service_healthy`).
-   - **Restart** : Le conteneur ne redémarre pas automatiquement (`restart: "no"`).
-
-5. **Airflow Webserver** (`airflow`):
+3. **Airflow** (`airflow`):
    - **Build** : Utilise un Dockerfile personnalisé situé dans le répertoire `./airflow` pour construire l'image.
    - **Container Name** : Le conteneur est nommé `airflow`.
-   - **Environment** : Configure Airflow, notamment la connexion à MySQL, les configurations de la base de données `WEATHER_MYSQL_DATABASE`, et les variables pour accéder à l'API OpenWeatherMap.
+   - **env_file** : Configure Airflow, en chargeant les variables d'environnement à partir du fichier `.env`.
    - **Volumes** : Monte les répertoires contenant les DAGs, logs, et plugins d'Airflow.
    - **Ports** : Mappe le port `8080` du conteneur sur le port `8080` de l'hôte pour accéder à l'interface web d'Airflow.
-   - **Depends_on** : Démarre uniquement après que MySQL soit prêt et que `airflow-init` ait terminé avec succès.
-   - **Command** : Démarre le scheduler et le webserver d'Airflow.
+   - **Depends_on** : Démarre uniquement après que MySQL soit prêt.
+   - **Command** :  Initialise ou met à jour la base de données d'Airflow, crée un utilisateur administrateur (`admin/admin`) pour accéder à l'interface Web, puis démarre simultanément le scheduler et le webserver d'Airflow. Le scheduler gère l'exécution des tâches des DAGs selon leur planning, tandis que le webserver fournit l'interface utilisateur accessible via un navigateur sur le port 8080. Cette configuration permet de déployer rapidement Airflow avec tous les services nécessaires dans un seul conteneur.
 
 #### Volumes
 
-- **`mysql-data`** : Volume nommé pour persister les données MySQL entre les redémarrages de conteneurs.
+- **`mysql_data`** : Volume nommé pour persister les données MySQL entre les redémarrages de conteneurs.
 
 #### Networks
 
@@ -264,16 +191,21 @@ Le script `mysql/init.sql` n'est pas nécessaire dans cette configuration car la
 
 ## Configuration du DAG Airflow
 
-Dans le fichier `airflow/dags/weather_etl.py`, configurez votre pipeline ETL pour automatiser la collecte et le traitement des données météorologiques. Voici un exemple de code pour le DAG :
+Dans le fichier `airflow/dags/weather_etl.py`, configurez votre pipeline ETL pour automatiser la création de la base de données, la collecte et le traitement des données météorologiques. Voici un extrait de code pour le DAG :
 
 ```python
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.exceptions import AirflowFailException
+import logging
 from datetime import datetime, timedelta, timezone
 import requests
 import mysql.connector
 from mysql.connector import Error
 import os
+
+# Configuration du logging
+logging.basicConfig(level=logging.INFO)
 
 # Arguments par défaut pour les tâches
 default_args = {
@@ -294,6 +226,25 @@ dag = DAG(
     start_date=datetime(2024, 8, 7),
     catchup=False,
 )
+
+# Fonction pour créer la base de données et l'utilisateur MySQL
+def create_database_and_user(**kwargs):
+    try:
+        with mysql.connector.connect(
+            host=os.getenv('MYSQL_HOST'),
+            user=os.getenv('MYSQL_ROOT', 'root'),
+            password=os.getenv('MYSQL_ROOT_PASSWORD'),
+            database=os.getenv('MYSQL_DATABASE')
+        ) as connection:
+            if connection.is_connected():
+                with connection.cursor() as cursor:
+                    cursor.execute(f"CREATE DATABASE IF NOT EXISTS {os.getenv('WEATHER_MYSQL_DATABASE')};")
+                    cursor.execute(f"CREATE USER IF NOT EXISTS '{os.getenv('MYSQL_USER')}'@'%' IDENTIFIED BY '{os.getenv('MYSQL_PASSWORD')}';")
+                    cursor.execute(f"GRANT ALL PRIVILEGES ON {os.getenv('WEATHER_MYSQL_DATABASE')}.* TO '{os.getenv('MYSQL_USER')}'@'%';")
+                    cursor.execute("FLUSH PRIVILEGES;")
+                logging.info(f"Database `{os.getenv('WEATHER_MYSQL_DATABASE')}` and user `{os.getenv('MYSQL_USER')}` ensured.")
+    except Error as e:
+        logging.error(f"Error while creating database and user: {e}")
 
 # Fonction pour créer la table dans MySQL
 def create_table(**kwargs):
@@ -324,30 +275,43 @@ def create_table(**kwargs):
             )
             connection.commit()
             cursor.close()
-            print("Table 'weather' created or already exists.")
+            logging.info("Table 'weather' created or already exists.")
     except Error as e:
-        print(f"Error: {e}")
+        logging.error(f"Error: {e}")
     finally:
         if connection and connection.is_connected():
             connection.close()
 
 # Fonction pour extraire les données météo de l'API
 def extract_weather_data(**kwargs):
+    logging.info("Starting weather data extraction")
+    
     api_key = os.getenv('WEATHER_API_KEY')
     city = os.getenv('WEATHER_CITY')
     lang = os.getenv('WEATHER_LANG')
     units = os.getenv('WEATHER_UNITS')
-    response = requests.get(f"http://api.openweathermap.org/data/2.5/weather?q={city}&lang={lang}&appid={api_key}&units={units}")
-    weather_data = response.json()
-    # Pusher weather_data dans XCom pour le rendre disponible aux tâches suivantes
-    kwargs['ti'].xcom_push(key='weather_data', value=weather_data)
+    
+    if not api_key or not city or not lang or not units:
+        raise AirflowFailException("Missing required environment variables for API call.")
+    
+    try:
+        logging.info(f"Fetching weather data for {city}")
+        response = requests.get(f"http://api.openweathermap.org/data/2.5/weather?q={city}&lang={lang}&appid={api_key}&units={units}")
+        response.raise_for_status()
+        weather_data = response.json()
+        logging.info(f"Weather data fetched successfully: {weather_data}")
+        kwargs['ti'].xcom_push(key='weather_data', value=weather_data)
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to fetch weather data: {str(e)}")
+        raise AirflowFailException(f"Failed to fetch weather data: {str(e)}")
 
 # Fonction pour transformer les données extraites
 def transform_weather_data(**kwargs):
     ti = kwargs['ti']
     weather_data = ti.xcom_pull(key='weather_data', task_ids='extract_weather_data')
+    
+    logging.info(f"Transforming weather data: {weather_data}")
 
-    # Convertir le timestamp UTC en heure locale
     utc_timestamp = datetime.fromtimestamp(weather_data["dt"], tz=timezone.utc)
     local_timestamp = utc_timestamp + timedelta(seconds=weather_data['timezone'])
 
@@ -361,7 +325,9 @@ def transform_weather_data(**kwargs):
         "lt": local_timestamp.strftime('%Y-%m-%d %H:%M:%S'),
         "utc": utc_timestamp.strftime('%Y-%m-%d %H:%M:%S')
     }
-    # Pusher transformed_data dans XCom pour le rendre disponible à la tâche suivante
+    
+    logging.info(f"Transformed data: {transformed_data}")
+    
     ti.xcom_push(key='transformed_data', value=transformed_data)
 
 # Fonction pour charger les données transformées dans MySQL
@@ -369,57 +335,67 @@ def load_weather_data(**kwargs):
     ti = kwargs['ti']
     transformed_data = ti.xcom_pull(key='transformed_data', task_ids='transform_weather_data')
     
-    # Afficher les variables d'environnement pour le débogage
-    print(f"Connecting to MySQL on {os.getenv('MYSQL_HOST')} with user {os.getenv('MYSQL_USER')} to database {os.getenv('WEATHER_MYSQL_DATABASE')}")
+    logging.info(f"Connecting to MySQL on {os.getenv('MYSQL_HOST')} with user {os.getenv('MYSQL_USER')} to database {os.getenv('WEATHER_MYSQL_DATABASE')}")
     
     connection = mysql.connector.connect(
         host=os.getenv('MYSQL_HOST'),
         user=os.getenv('MYSQL_USER'),
         password=os.getenv('MYSQL_PASSWORD'),
-        database=os.getenv('WEATHER_MYSQL_DATABASE')  # Vérifiez que cette variable est correcte
+        database=os.getenv('WEATHER_MYSQL_DATABASE')
     )
     
-    if connection.is_connected():
-        print(f"Connected to database: {connection.database}")
-    
-    cursor = connection.cursor()
+    try:
+        if connection.is_connected():
+            logging.info(f"Connected to database: {connection.database}")
+        
+        cursor = connection.cursor()
 
-    # Vérifiez si les données existent déjà
-    check_query = """
-        SELECT COUNT(*) FROM weather 
-        WHERE city = %s AND utc = %s
-    """
-    cursor.execute(check_query, (
-        transformed_data["city"],
-        transformed_data["utc"]
-    ))
-    result = cursor.fetchone()
-
-    if result[0] == 0:
-        # Insérez les données si elles n'existent pas déjà
-        insert_query = """
-            INSERT INTO weather (city, temperature, weather, humidity, pressure, wind_speed, lt, utc)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        # Vérifiez si les données existent déjà
+        check_query = """
+            SELECT COUNT(*) FROM weather 
+            WHERE city = %s AND utc = %s
         """
-        cursor.execute(insert_query, (
-            transformed_data["city"], 
-            transformed_data["temperature"], 
-            transformed_data["weather"], 
-            transformed_data["humidity"], 
-            transformed_data["pressure"], 
-            transformed_data["wind_speed"], 
-            transformed_data["lt"],
+        cursor.execute(check_query, (
+            transformed_data["city"],
             transformed_data["utc"]
         ))
-        connection.commit()
-        print(f"Inserted data: {transformed_data}")
-    else:
-        print(f"Data already exists: {transformed_data}")
+        result = cursor.fetchone()
 
-    cursor.close()
-    connection.close()
+        if result[0] == 0:
+            # Insérez les données si elles n'existent pas déjà
+            insert_query = """
+                INSERT INTO weather (city, temperature, weather, humidity, pressure, wind_speed, lt, utc)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            cursor.execute(insert_query, (
+                transformed_data["city"], 
+                transformed_data["temperature"], 
+                transformed_data["weather"], 
+                transformed_data["humidity"], 
+                transformed_data["pressure"], 
+                transformed_data["wind_speed"], 
+                transformed_data["lt"],
+                transformed_data["utc"]
+            ))
+            connection.commit()
+            logging.info(f"Inserted data: {transformed_data}")
+        else:
+            logging.info(f"Data already exists: {transformed_data}")
+
+        cursor.close()
+    except Error as e:
+        logging.error(f"Error loading data: {e}")
+    finally:
+        if connection and connection.is_connected():
+            connection.close()
 
 # Définition des tâches du DAG
+create_database_and_user_task = PythonOperator(
+    task_id='create_database_and_user',
+    python_callable=create_database_and_user,
+    dag=dag,
+)
+
 create_table_task = PythonOperator(
     task_id='create_table',
     python_callable=create_table,
@@ -445,7 +421,7 @@ load_task = PythonOperator(
 )
 
 # Définition de la séquence des tâches
-create_table_task >> extract_task >> transform_task >> load_task
+create_database_and_user_task >> create_table_task >> extract_task >> transform_task >> load_task
 ```
 
 ### Explication du fichier `weather_etl.py` / des tâches du DAG :
@@ -480,6 +456,10 @@ Le DAG est défini avec les paramètres suivants :
 - **`start_date`** : La date de début d'exécution du DAG.
 - **`catchup`** : Désactive l'exécution des périodes manquées si Airflow est arrêté.
 
+#### Fonction pour créer la base de données et l'utilisateur MySQL
+
+La fonction `create_database_and_user` se connecte à un serveur MySQL pour créer une base de données dédiée aux données météorologiques, spécifiée par la variable d'environnement `WEATHER_MYSQL_DATABASE`, si elle n'existe pas déjà. Elle crée également un utilisateur MySQL défini par `MYSQL_USER` avec les privilèges nécessaires pour accéder à cette base de données. Après avoir accordé tous les privilèges sur cette base à l'utilisateur, la fonction actualise les privilèges avec `FLUSH PRIVILEGES` pour s'assurer que les modifications sont immédiatement prises en compte. Cette automatisation garantit que l'environnement de base de données est prêt pour l'insertion et la manipulation sécurisée des données dans le cadre du pipeline ETL.
+
 #### Fonction pour créer la table MySQL
 
 La fonction `create_table` se connecte à la base de données MySQL spécifiée et crée une table `weather` si elle n'existe pas déjà. Cette table est utilisée pour stocker les données météorologiques :
@@ -507,6 +487,7 @@ La fonction `load_weather_data` charge les données transformées dans la table 
 #### Définition des tâches du DAG
 
 Chaque étape du pipeline ETL est définie comme une tâche séparée dans le DAG :
+- **`create_database_and_user_task`** : Tâche pour créer la base de doonées et l'utilisateur dans MySQL.
 - **`create_table_task`** : Tâche pour créer la table dans MySQL.
 - **`extract_task`** : Tâche pour extraire les données météorologiques.
 - **`transform_task`** : Tâche pour transformer les données extraites.
@@ -515,7 +496,7 @@ Chaque étape du pipeline ETL est définie comme une tâche séparée dans le DA
 #### Ordonnancement des tâches
 
 Les tâches sont ordonnées de manière séquentielle :
-- **`create_table_task >> extract_task >> transform_task >> load_task`** : Cette syntaxe indique que `create_table_task` doit s'exécuter en premier, suivi de `extract_task`, puis de `transform_task`, et enfin de `load_task`.
+- **`create_database_and_user_task >> create_table_task >> extract_task >> transform_task >> load_task`** : Cette syntaxe indique que `create_database_and_user_task` doit s'exécuter en premier, suivi de `create_table_task`, puis de `extract_task`, puis de `transform_task`, et enfin de `load_task`.
 
 ## Vérification et déploiement
 
@@ -568,4 +549,3 @@ Les tâches sont ordonnées de manière séquentielle :
 ## Conclusion
 
 Ce guide vous a accompagné dans la configuration d'un pipeline ETL complet utilisant Airflow et MySQL, déployé avec Docker Compose. Grâce à cette configuration, vous pouvez automatiser l'extraction, la transformation et le chargement de données depuis une API publique vers une base de données MySQL dédiée. En suivant les étapes de ce manuel, vous avez mis en place une infrastructure robuste capable de gérer efficacement vos besoins en traitement de données. N'hésitez pas à ajuster la configuration en fonction de vos besoins spécifiques et à surveiller les performances de votre pipeline pour garantir son bon fonctionnement à long terme.
-
